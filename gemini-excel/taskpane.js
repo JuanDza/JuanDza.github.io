@@ -49,12 +49,63 @@ const toggleKeyVisibility = document.getElementById("toggleKeyVisibility");
 const testStatus = document.getElementById("testStatus");
 const btnClearChat = document.getElementById("btnClearChat");
 
+// Multi-tier key retrieval
+function getStoredApiKey() {
+  if (currentApiKey && currentApiKey.length > 5) return currentApiKey;
+  
+  let key = "";
+  try { key = localStorage.getItem("gemini_api_key") || ""; } catch (e) {}
+  if (key && key.trim().length > 5) {
+    currentApiKey = key.trim();
+    return currentApiKey;
+  }
+
+  try { key = sessionStorage.getItem("gemini_api_key") || ""; } catch (e) {}
+  if (key && key.trim().length > 5) {
+    currentApiKey = key.trim();
+    return currentApiKey;
+  }
+
+  if (apiKeyInput && apiKeyInput.value.trim().length > 5) {
+    currentApiKey = apiKeyInput.value.trim();
+    return currentApiKey;
+  }
+
+  return "";
+}
+
+function persistApiKey(key) {
+  if (!key) return;
+  currentApiKey = key.trim();
+  try { localStorage.setItem("gemini_api_key", currentApiKey); } catch (e) {}
+  try { sessionStorage.setItem("gemini_api_key", currentApiKey); } catch (e) {}
+
+  if (isOfficeReady && Office.context?.document?.settings) {
+    try {
+      Office.context.document.settings.set("gemini_api_key", currentApiKey);
+      Office.context.document.settings.saveAsync();
+    } catch (e) {}
+  }
+}
+
 // Initialize Office.js
 Office.onReady((info) => {
   if (info.host === Office.HostType.Excel) {
     isOfficeReady = true;
     console.log("Running inside Microsoft Excel");
     
+    // Check if document settings has the key stored
+    if (Office.context?.document?.settings) {
+      try {
+        const docKey = Office.context.document.settings.get("gemini_api_key");
+        if (docKey && !currentApiKey) {
+          persistApiKey(docKey);
+          if (apiKeyInput) apiKeyInput.value = docKey;
+          checkApiStatus();
+        }
+      } catch (e) {}
+    }
+
     // Listen for selection changes in real-time
     Office.context.document.addHandlerAsync(
       Office.EventType.DocumentSelectionChanged,
@@ -90,24 +141,24 @@ document.addEventListener("DOMContentLoaded", () => {
   checkApiStatus();
 });
 
-function getStoredApiKey() {
-  return (currentApiKey || localStorage.getItem("gemini_api_key") || sessionStorage.getItem("gemini_api_key") || (apiKeyInput ? apiKeyInput.value : "") || "").trim();
-}
-
 function loadSettings() {
-  currentApiKey = (localStorage.getItem("gemini_api_key") || sessionStorage.getItem("gemini_api_key") || "").trim();
-  let model = localStorage.getItem("gemini_model") || "gemini-3.6-flash";
-  
-  // Auto-migrate deprecated 2.5 models
+  const apiKey = getStoredApiKey();
+  let model = "gemini-3.6-flash";
+  try { model = localStorage.getItem("gemini_model") || "gemini-3.6-flash"; } catch (e) {}
+
+  // Auto-migrate deprecated models
   if (model === "gemini-2.5-flash" || model === "gemini-2.5-pro") {
     model = "gemini-3.6-flash";
-    localStorage.setItem("gemini_model", model);
+    try { localStorage.setItem("gemini_model", model); } catch (e) {}
   }
 
-  const sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT;
-  const temp = localStorage.getItem("gemini_temp") || "0.2";
+  let sysPrompt = DEFAULT_SYSTEM_PROMPT;
+  try { sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT; } catch (e) {}
 
-  apiKeyInput.value = currentApiKey;
+  let temp = "0.2";
+  try { temp = localStorage.getItem("gemini_temp") || "0.2"; } catch (e) {}
+
+  apiKeyInput.value = apiKey;
   modelSelector.value = model;
   systemPromptInput.value = sysPrompt;
   tempSlider.value = temp;
@@ -120,10 +171,9 @@ function saveSettings() {
   const sysPrompt = systemPromptInput.value.trim() || DEFAULT_SYSTEM_PROMPT;
   const temp = tempSlider.value;
 
-  currentApiKey = key;
+  persistApiKey(key);
+
   try {
-    localStorage.setItem("gemini_api_key", key);
-    sessionStorage.setItem("gemini_api_key", key);
     localStorage.setItem("gemini_model", model);
     localStorage.setItem("gemini_system_prompt", sysPrompt);
     localStorage.setItem("gemini_temp", temp);
@@ -149,7 +199,7 @@ function checkApiStatus() {
 function setupEventListeners() {
   // Model selector change
   modelSelector.addEventListener("change", (e) => {
-    localStorage.setItem("gemini_model", e.target.value);
+    try { localStorage.setItem("gemini_model", e.target.value); } catch (e) {}
   });
 
   // Settings Modal
@@ -180,6 +230,15 @@ function setupEventListeners() {
     } else {
       apiKeyInput.type = "password";
       toggleKeyVisibility.textContent = "👁️";
+    }
+  });
+
+  // Auto-persist immediately when user pastes or types their key
+  apiKeyInput.addEventListener("input", () => {
+    const key = apiKeyInput.value.trim();
+    if (key.length > 5) {
+      persistApiKey(key);
+      checkApiStatus();
     }
   });
 
@@ -290,7 +349,7 @@ async function sendMessage() {
   const apiKey = getStoredApiKey();
   if (!apiKey || apiKey.length < 5) {
     settingsModal.classList.add("active");
-    testStatus.innerHTML = "<span style='color:#ef4444;'>Please configure your Google AI Studio API Key first.</span>";
+    testStatus.innerHTML = "<span style='color:#ef4444;'>Please paste your Google AI Studio API Key above and click Save & Apply.</span>";
     return;
   }
 
@@ -312,20 +371,25 @@ async function sendMessage() {
   // Prepare Prompt Context
   let contextualPrompt = text;
   if (chkIncludeSelection.checked && currentSelection.hasData) {
+    const safeValues = (currentSelection.values || []).slice(0, 50);
+    const safeFormulas = (currentSelection.formulas || []).slice(0, 50);
     const selectionContext = `
 [Active Selection Context in Excel:
 - Address: ${currentSelection.address}
 - Dimensions: ${currentSelection.rowCount} rows × ${currentSelection.columnCount} columns
-- Cell Values: ${JSON.stringify(currentSelection.values)}
-- Cell Formulas: ${JSON.stringify(currentSelection.formulas)}
+- Cell Values: ${JSON.stringify(safeValues)}
+- Cell Formulas: ${JSON.stringify(safeFormulas)}
 ]`;
     contextualPrompt = `${text}\n\n${selectionContext}`;
   }
 
   try {
-    const model = modelSelector.value;
-    const sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT;
-    const temp = parseFloat(localStorage.getItem("gemini_temp") || "0.2");
+    const model = modelSelector.value || "gemini-3.6-flash";
+    let sysPrompt = DEFAULT_SYSTEM_PROMPT;
+    try { sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT; } catch (e) {}
+
+    let temp = 0.2;
+    try { temp = parseFloat(localStorage.getItem("gemini_temp") || "0.2"); } catch (e) {}
 
     // Build History
     chatHistory.push({ role: "user", parts: [{ text: contextualPrompt }] });
@@ -354,7 +418,7 @@ async function sendMessage() {
     if (!response.ok) {
       const errJson = await response.json().catch(() => ({}));
       const errMsg = errJson?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-      appendMessage("assistant", `⚠️ **Gemini API Error:** ${errMsg}\n\nPlease verify your API key or model quota in Settings.`);
+      appendMessage("assistant", `⚠️ **Gemini API Error:** ${errMsg}\n\nPlease check your API key or model in Settings.`);
       return;
     }
 
@@ -370,7 +434,7 @@ async function sendMessage() {
   } catch (err) {
     removeElement(loadingId);
     console.error("Gemini invocation error:", err);
-    appendMessage("assistant", `⚠️ **Network / Connection Error:** ${err.message}. Check your internet connection.`);
+    appendMessage("assistant", `⚠️ **Network / Connection Error:** ${err.message}.`);
   } finally {
     isGenerating = false;
     btnSend.disabled = promptInput.value.trim().length === 0;
@@ -379,14 +443,14 @@ async function sendMessage() {
 
 // Test Connection
 async function testApiKeyConnection() {
-  const key = apiKeyInput.value.trim();
-  if (!key) {
+  const key = (apiKeyInput.value || "").trim();
+  if (!key || key.length < 5) {
     testStatus.innerHTML = "<span style='color:#ef4444;'>Please paste an API key first.</span>";
     return;
   }
 
   testStatus.innerHTML = "<span style='color:var(--text-muted);'>Testing connection to Google AI Studio...</span>";
-  const model = modelSelector.value;
+  const model = modelSelector.value || "gemini-3.6-flash";
 
   try {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
@@ -401,7 +465,8 @@ async function testApiKeyConnection() {
 
     if (response.ok) {
       testStatus.innerHTML = "<span style='color:#10b981; font-weight:600;'>✓ Connected successfully! Model is ready.</span>";
-      statusDot.className = "status-dot connected";
+      persistApiKey(key);
+      checkApiStatus();
     } else {
       const err = await response.json().catch(() => ({}));
       testStatus.innerHTML = `<span style='color:#ef4444;'>✗ Error (${response.status}): ${err?.error?.message || "Invalid Key"}</span>`;
@@ -421,7 +486,6 @@ function appendMessage(role, content, selectionBadgeText = null) {
   bubble.className = "message-bubble";
 
   if (role === "assistant") {
-    // Parse Markdown using marked
     let rawHtml = marked.parse(content);
     bubble.innerHTML = rawHtml;
     enhanceCodeBlocks(bubble);
