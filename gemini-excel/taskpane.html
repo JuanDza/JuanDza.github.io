@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini AI Assistant for Excel</title>
+  
+  <!-- Office.js -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <!-- Marked Markdown Parser -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  
+  <link rel="stylesheet" href="taskpane.css">
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header class="header">
+    <div class="brand">
+      <img src="assets/icon.svg" alt="Gemini" class="brand-icon">
+      <span>Gemini AI</span>
+      <div id="statusDot" class="status-dot" title="Checking API status..."></div>
+    </div>
+
+    <div class="header-actions">
+      <select id="modelSelector" class="model-selector" title="Select Gemini Model">
+        <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash</option>
+        <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+        <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+        <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+      </select>
+
+      <button id="btnClearChat" class="btn-icon" title="Clear Chat History">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+      </button>
+
+      <button id="btnOpenSettings" class="btn-icon" title="Settings & API Key">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Real-time Selection Context Bar -->
+  <section class="selection-bar">
+    <div class="selection-info">
+      <span>Context:</span>
+      <span id="selectionBadge" class="selection-badge">A1</span>
+      <button id="btnRefreshSelection" class="btn-icon" style="padding: 2px;" title="Refresh Selection">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+        </svg>
+      </button>
+    </div>
+
+    <label class="selection-toggle-label">
+      <input type="checkbox" id="chkIncludeSelection" checked>
+      <span>Include in prompt</span>
+    </label>
+  </section>
+
+  <!-- Quick Action Chips -->
+  <nav class="quick-actions">
+    <button class="chip" data-action="formula">🧮 Suggest Formula</button>
+    <button class="chip" data-action="fix">⚡ Fix Error</button>
+    <button class="chip" data-action="analyze">📊 Analyze Data</button>
+    <button class="chip" data-action="explain">💡 Explain Cell</button>
+    <button class="chip" data-action="clean">🧹 Clean & Format</button>
+  </nav>
+
+  <!-- Chat History Container -->
+  <main id="chatMessages" class="chat-container">
+    <div class="welcome-card">
+      <div class="welcome-title">Gemini AI Assistant for Excel</div>
+      <div class="welcome-desc">
+        100% Free, direct connection to Google AI Studio.<br>
+        Ask questions, analyze ranges, or click a quick action above.
+      </div>
+      <div class="welcome-features">
+        <div class="feature-item">⚡ <strong>One-Click Insertion:</strong> Instantly insert formulas directly into your active cells.</div>
+        <div class="feature-item">📊 <strong>Dynamic Context:</strong> Detects selected cells and feeds values/formulas to Gemini.</div>
+        <div class="feature-item">🔒 <strong>100% Private BYOK:</strong> Your API key is stored safely in your local browser sandbox.</div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Input Area -->
+  <footer class="input-container">
+    <div class="input-box">
+      <textarea id="promptInput" class="input-textarea" placeholder="Ask Gemini about your sheet or formula..." rows="1"></textarea>
+      <button id="btnSend" class="btn-send" title="Send Message (Enter)" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      </button>
+    </div>
+    <div class="input-footer">
+      <span>Shift + Enter for new line</span>
+      <span>Google AI Studio Direct API</span>
+    </div>
+  </footer>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>Gemini Settings & API Key</span>
+        <button id="btnCloseSettings" class="btn-icon" style="font-size:16px;">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">
+            <span>Google AI Studio API Key</span>
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--gemini-blue); font-size:11px; text-decoration:none;">Get Free Key ↗</a>
+          </label>
+          <div class="input-password-wrapper">
+            <input type="password" id="apiKeyInput" class="form-input" placeholder="AIzaSy...">
+            <button type="button" id="toggleKeyVisibility">👁️</button>
+          </div>
+          <div class="form-help">
+            Free forever tier via Google AI Studio. Stored strictly in local device storage.
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" id="btnTestKey" class="btn-secondary" style="font-size:11px; padding:6px 10px;">Test Connection</button>
+          <span id="testStatus" style="font-size:11px;"></span>
+        </div>
+
+        <div class="form-group">
+          <div class="form-label">
+            <span>Creativity (Temperature)</span>
+            <span id="tempValue" style="color:var(--text-muted);">0.2</span>
+          </div>
+          <input type="range" id="tempSlider" min="0.0" max="1.0" step="0.1" value="0.2">
+          <div class="form-help">0.0 - 0.2 recommended for precise formulas and calculations.</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">System Persona / Instructions</label>
+          <textarea id="systemPromptInput" class="form-textarea" rows="4"></textarea>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btnSaveSettings" class="btn-primary">Save & Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="taskpane.js"></script>
+</body>
+</html>

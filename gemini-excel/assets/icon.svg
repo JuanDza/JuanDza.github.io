@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <defs>
+    <linearGradient id="geminiGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A73E8" />
+      <stop offset="50%" stop-color="#8E24AA" />
+      <stop offset="100%" stop-color="#00897B" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <rect x="5" y="5" width="90" height="90" rx="22" fill="url(#geminiGrad)" />
+  <path d="M 50 16 Q 50 50 16 50 Q 50 50 50 84 Q 50 50 84 50 Q 50 50 50 16 Z" fill="#FFFFFF" filter="url(#glow)" />
+</svg>
