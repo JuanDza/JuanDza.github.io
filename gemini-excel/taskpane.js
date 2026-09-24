@@ -1,7 +1,11 @@
 /**
  * Gemini AI Assistant for Excel - Taskpane Controller
  * 100% Free, Client-side Bring-Your-Own-Key (BYOK) via Google AI Studio
- * Features: Auto Smart Fallback across Gemini 3.8, 3.7, 3.6, and 3.5 Flash Lite
+ * Features:
+ * - Session Transcript Preservation across Excel reloads
+ * - 1-Click Export to Markdown (.md)
+ * - 1-Click Save to Excel Worksheet ("AI_Transcript")
+ * - Auto Smart Fallback across Gemini 3.8, 3.7, 3.6, 3.5 Flash Lite & 3.1 Pro
  */
 
 // Available Models Definition
@@ -36,6 +40,7 @@ let currentSelection = {
 };
 
 let chatHistory = [];
+let savedMessages = [];
 let isGenerating = false;
 let isOfficeReady = false;
 let currentApiKey = "";
@@ -70,6 +75,8 @@ const tempValue = document.getElementById("tempValue");
 const toggleKeyVisibility = document.getElementById("toggleKeyVisibility");
 const testStatus = document.getElementById("testStatus");
 const btnClearChat = document.getElementById("btnClearChat");
+const btnExportTranscript = document.getElementById("btnExportTranscript");
+const btnExportSheet = document.getElementById("btnExportSheet");
 
 // Multi-tier key retrieval
 function getStoredApiKey() {
@@ -107,6 +114,32 @@ function persistApiKey(key) {
       Office.context.document.settings.set("gemini_api_key", currentApiKey);
       Office.context.document.settings.saveAsync();
     } catch (e) {}
+  }
+}
+
+// Restore saved transcript from localStorage
+function restoreChatTranscript() {
+  try {
+    const raw = localStorage.getItem("gemini_chat_transcript");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        savedMessages = parsed;
+        const welcomeCard = document.querySelector(".welcome-card");
+        if (welcomeCard) welcomeCard.remove();
+
+        savedMessages.forEach((msg) => {
+          renderMessageNode(msg.role, msg.content, msg.time, msg.selection, msg.modelBadge);
+          chatHistory.push({
+            role: msg.role === "assistant" ? "model" : "user",
+            parts: [{ text: msg.content }]
+          });
+        });
+        console.log(`Restored ${savedMessages.length} messages from previous session.`);
+      }
+    }
+  } catch (err) {
+    console.warn("Could not restore chat transcript:", err);
   }
 }
 
@@ -161,6 +194,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSettings();
   setupEventListeners();
   checkApiStatus();
+  restoreChatTranscript();
 });
 
 function loadSettings() {
@@ -285,13 +319,26 @@ function setupEventListeners() {
     btnSend.disabled = promptInput.value.trim().length === 0 || isGenerating;
   });
 
+  // Clear Chat History
   btnClearChat.addEventListener("click", () => {
-    if (confirm("Clear conversation history?")) {
+    if (confirm("Clear conversation history and stored transcript?")) {
       chatHistory = [];
+      savedMessages = [];
+      try { localStorage.removeItem("gemini_chat_transcript"); } catch (e) {}
       chatMessages.innerHTML = "";
       renderWelcomeCard();
     }
   });
+
+  // Export Transcript to Markdown file
+  if (btnExportTranscript) {
+    btnExportTranscript.addEventListener("click", downloadTranscriptMd);
+  }
+
+  // Save Transcript to Excel Worksheet
+  if (btnExportSheet) {
+    btnExportSheet.addEventListener("click", exportTranscriptToSheet);
+  }
 
   // Quick Action Chips
   document.querySelectorAll(".chip").forEach((chip) => {
@@ -379,7 +426,7 @@ async function sendMessage() {
   const welcomeCard = document.querySelector(".welcome-card");
   if (welcomeCard) welcomeCard.remove();
 
-  // Add User Message to UI
+  // Add User Message to UI & history
   appendMessage("user", text, currentSelection.hasData && chkIncludeSelection.checked ? currentSelection.address : null);
   promptInput.value = "";
   promptInput.style.height = "24px";
@@ -428,8 +475,6 @@ async function sendMessage() {
     };
 
     // Determine cascade order:
-    // If 'auto', try: 3.8 Flash -> 3.7 Flash -> 3.6 Flash -> 3.5 Flash Lite
-    // If specific model selected, try that model first, then fall back to the others if demand spiked
     let candidatesToTry = [];
     if (selectedSetting === "auto") {
       candidatesToTry = [...ORDERED_MODELS];
@@ -475,12 +520,13 @@ async function sendMessage() {
           errMsg.toLowerCase().includes("spikes in demand") || 
           errMsg.toLowerCase().includes("overloaded") || 
           errMsg.toLowerCase().includes("exhausted") ||
+          errMsg.toLowerCase().includes("billing account required") ||
           errMsg.toLowerCase().includes("try again later");
 
         if (isDemandIssue && i < candidatesToTry.length - 1) {
           const nextModel = candidatesToTry[i + 1];
-          console.warn(`Demand spike on ${activeModel}. Auto-falling back to ${nextModel}...`);
-          updateLoadingBubble(loadingId, `High demand on ${displayName}, auto-routing to ${getModelDisplayName(nextModel)}...`);
+          console.warn(`Demand spike or limitation on ${activeModel}. Auto-falling back to ${nextModel}...`);
+          updateLoadingBubble(loadingId, `Capacity busy on ${displayName}, auto-routing to ${getModelDisplayName(nextModel)}...`);
           await new Promise(res => setTimeout(res, 250));
           continue;
         } else {
@@ -574,8 +620,26 @@ async function testApiKeyConnection() {
   }
 }
 
-// UI Rendering
+// UI Rendering & Transcript Persistence
 function appendMessage(role, content, selectionBadgeText = null, modelBadgeText = null) {
+  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  renderMessageNode(role, content, timeStr, selectionBadgeText, modelBadgeText);
+
+  // Save to persistent session transcript
+  savedMessages.push({
+    role,
+    content,
+    time: timeStr,
+    selection: selectionBadgeText,
+    modelBadge: modelBadgeText
+  });
+
+  try {
+    localStorage.setItem("gemini_chat_transcript", JSON.stringify(savedMessages.slice(-50)));
+  } catch (e) {}
+}
+
+function renderMessageNode(role, content, timeStr, selectionBadgeText = null, modelBadgeText = null) {
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${role}`;
 
@@ -594,8 +658,7 @@ function appendMessage(role, content, selectionBadgeText = null, modelBadgeText 
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  meta.innerHTML = `<span>${time}</span>`;
+  meta.innerHTML = `<span>${timeStr || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`;
 
   if (selectionBadgeText) {
     meta.innerHTML += `<span>•</span><span style="font-family:monospace;">${selectionBadgeText}</span>`;
@@ -702,6 +765,101 @@ function enhanceCodeBlocks(container) {
   });
 }
 
+// Download Transcript as Markdown (.md)
+function downloadTranscriptMd() {
+  if (!savedMessages || savedMessages.length === 0) {
+    alert("No conversation messages to export yet.");
+    return;
+  }
+
+  let md = `# Gemini AI for Excel — Session Transcript\n\n`;
+  md += `*Exported on ${new Date().toLocaleString()}*\n`;
+  md += `*Total Messages: ${savedMessages.length}*\n\n---\n\n`;
+
+  savedMessages.forEach((msg) => {
+    const speaker = msg.role === "user" ? "### 👤 User" : `### 🤖 Gemini (${msg.modelBadge || "AI"})`;
+    const context = msg.selection ? `*(Range: ${msg.selection} • ${msg.time})*` : `*(${msg.time})*`;
+    md += `${speaker} ${context}\n\n`;
+    md += `${msg.content}\n\n---\n\n`;
+  });
+
+  const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Gemini_Excel_Transcript_${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Save Transcript to Excel Worksheet ("AI_Transcript")
+async function exportTranscriptToSheet() {
+  if (!savedMessages || savedMessages.length === 0) {
+    alert("No conversation messages to save yet.");
+    return;
+  }
+
+  if (!isOfficeReady) {
+    downloadTranscriptMd();
+    return;
+  }
+
+  try {
+    await Excel.run(async (context) => {
+      const sheets = context.workbook.worksheets;
+      sheets.load("items/name");
+      await context.sync();
+
+      const sheetName = "AI_Transcript";
+      let logSheet = sheets.items.find(s => s.name === sheetName);
+      let startRow = 1;
+
+      if (!logSheet) {
+        logSheet = sheets.add(sheetName);
+        // Style header
+        const header = logSheet.getRange("A1:D1");
+        header.values = [["Timestamp", "Speaker", "Excel Range", "Message / Solution"]];
+        header.format.fill.color = "#107c41"; // Excel green
+        header.format.font.color = "#ffffff";
+        header.format.font.bold = true;
+        startRow = 2;
+      } else {
+        const used = logSheet.getUsedRangeOrNullObject();
+        await context.sync();
+        if (used && !used.isNullObject) {
+          used.load("rowCount");
+          await context.sync();
+          startRow = used.rowCount + 1;
+        } else {
+          startRow = 2;
+        }
+      }
+
+      const rows = savedMessages.map(m => [
+        m.time || new Date().toLocaleTimeString(),
+        m.role === "user" ? "User" : `Gemini (${m.modelBadge || "AI"})`,
+        m.selection || "-",
+        m.content
+      ]);
+
+      const endRow = startRow + rows.length - 1;
+      const targetRange = logSheet.getRange(`A${startRow}:D${endRow}`);
+      targetRange.values = rows;
+      logSheet.getRange("A:D").format.autofitColumns();
+      logSheet.activate();
+      await context.sync();
+
+      alert(`✓ Successfully saved ${rows.length} messages to '${sheetName}' worksheet!`);
+    });
+  } catch (err) {
+    console.error("Export to sheet error:", err);
+    alert(`Could not write to worksheet: ${err.message}. Exporting as Markdown file instead.`);
+    downloadTranscriptMd();
+  }
+}
+
 function renderWelcomeCard() {
   const welcome = document.createElement("div");
   welcome.className = "welcome-card";
@@ -712,8 +870,8 @@ function renderWelcomeCard() {
     </div>
     <div class="welcome-features">
       <div class="feature-item">⚡ <strong>Auto Smart Fallback:</strong> Automatically switches models if Google experiences demand spikes.</div>
+      <div class="feature-item">💾 <strong>Session Persistence:</strong> Your chats are auto-saved across reloads and exportable to Excel or Markdown.</div>
       <div class="feature-item">📊 <strong>Dynamic Context:</strong> Detects selected cells and feeds values/formulas to Gemini.</div>
-      <div class="feature-item">🔒 <strong>100% Private BYOK:</strong> Your API key is stored safely in your local browser sandbox.</div>
     </div>
   `;
   chatMessages.appendChild(welcome);
