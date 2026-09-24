@@ -16,6 +16,7 @@ let currentSelection = {
 let chatHistory = [];
 let isGenerating = false;
 let isOfficeReady = false;
+let currentApiKey = "";
 
 const DEFAULT_SYSTEM_PROMPT = `You are an elite Excel, Financial Modeling, and Data Analysis AI assistant powered by Google Gemini.
 Your job is to assist the user directly within Microsoft Excel.
@@ -89,8 +90,12 @@ document.addEventListener("DOMContentLoaded", () => {
   checkApiStatus();
 });
 
+function getStoredApiKey() {
+  return (currentApiKey || localStorage.getItem("gemini_api_key") || sessionStorage.getItem("gemini_api_key") || (apiKeyInput ? apiKeyInput.value : "") || "").trim();
+}
+
 function loadSettings() {
-  const apiKey = localStorage.getItem("gemini_api_key") || "";
+  currentApiKey = (localStorage.getItem("gemini_api_key") || sessionStorage.getItem("gemini_api_key") || "").trim();
   let model = localStorage.getItem("gemini_model") || "gemini-3.6-flash";
   
   // Auto-migrate deprecated 2.5 models
@@ -102,7 +107,7 @@ function loadSettings() {
   const sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT;
   const temp = localStorage.getItem("gemini_temp") || "0.2";
 
-  apiKeyInput.value = apiKey;
+  apiKeyInput.value = currentApiKey;
   modelSelector.value = model;
   systemPromptInput.value = sysPrompt;
   tempSlider.value = temp;
@@ -115,18 +120,24 @@ function saveSettings() {
   const sysPrompt = systemPromptInput.value.trim() || DEFAULT_SYSTEM_PROMPT;
   const temp = tempSlider.value;
 
-  localStorage.setItem("gemini_api_key", key);
-  localStorage.setItem("gemini_model", model);
-  localStorage.setItem("gemini_system_prompt", sysPrompt);
-  localStorage.setItem("gemini_temp", temp);
+  currentApiKey = key;
+  try {
+    localStorage.setItem("gemini_api_key", key);
+    sessionStorage.setItem("gemini_api_key", key);
+    localStorage.setItem("gemini_model", model);
+    localStorage.setItem("gemini_system_prompt", sysPrompt);
+    localStorage.setItem("gemini_temp", temp);
+  } catch (e) {
+    console.warn("Storage write error:", e);
+  }
 
   checkApiStatus();
   settingsModal.classList.remove("active");
 }
 
 function checkApiStatus() {
-  const key = localStorage.getItem("gemini_api_key");
-  if (key && key.startsWith("AIzaSy")) {
+  const key = getStoredApiKey();
+  if (key && key.length > 5) {
     statusDot.className = "status-dot connected";
     statusDot.title = "Gemini API Key configured";
   } else {
@@ -276,8 +287,8 @@ async function sendMessage() {
   const text = promptInput.value.trim();
   if (!text || isGenerating) return;
 
-  const apiKey = localStorage.getItem("gemini_api_key");
-  if (!apiKey || !apiKey.startsWith("AIzaSy")) {
+  const apiKey = getStoredApiKey();
+  if (!apiKey || apiKey.length < 5) {
     settingsModal.classList.add("active");
     testStatus.innerHTML = "<span style='color:#ef4444;'>Please configure your Google AI Studio API Key first.</span>";
     return;
