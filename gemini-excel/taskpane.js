@@ -91,7 +91,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function loadSettings() {
   const apiKey = localStorage.getItem("gemini_api_key") || "";
-  const model = localStorage.getItem("gemini_model") || "gemini-2.5-flash";
+  let model = localStorage.getItem("gemini_model") || "gemini-3.6-flash";
+  
+  // Auto-migrate deprecated 2.5 models
+  if (model === "gemini-2.5-flash" || model === "gemini-2.5-pro") {
+    model = "gemini-3.6-flash";
+    localStorage.setItem("gemini_model", model);
+  }
+
   const sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT;
   const temp = localStorage.getItem("gemini_temp") || "0.2";
 
