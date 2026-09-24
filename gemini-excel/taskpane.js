@@ -1,7 +1,28 @@
 /**
  * Gemini AI Assistant for Excel - Taskpane Controller
  * 100% Free, Client-side Bring-Your-Own-Key (BYOK) via Google AI Studio
+ * Features: Auto Smart Fallback across Gemini 3.8, 3.7, 3.6, and 3.5 Flash Lite
  */
+
+// Available Models Definition
+const MODEL_NAMES = {
+  "auto": "Auto (Smart Fallback)",
+  "gemini-3.8-flash": "Gemini 3.8 Flash",
+  "gemini-3.7-flash": "Gemini 3.7 Flash",
+  "gemini-3.6-flash": "Gemini 3.6 Flash",
+  "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite"
+};
+
+const ORDERED_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite"
+];
+
+function getModelDisplayName(id) {
+  return MODEL_NAMES[id] || id;
+}
 
 // State
 let currentSelection = {
@@ -143,12 +164,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function loadSettings() {
   const apiKey = getStoredApiKey();
-  let model = "gemini-3.6-flash";
-  try { model = localStorage.getItem("gemini_model") || "gemini-3.6-flash"; } catch (e) {}
+  let model = "auto";
+  try { model = localStorage.getItem("gemini_model") || "auto"; } catch (e) {}
 
-  // Auto-migrate deprecated models
-  if (model === "gemini-2.5-flash" || model === "gemini-2.5-pro") {
-    model = "gemini-3.6-flash";
+  // Auto-migrate legacy/deprecated models to auto
+  if (model === "gemini-2.5-flash" || model === "gemini-2.5-pro" || model === "gemini-2.0-flash") {
+    model = "auto";
     try { localStorage.setItem("gemini_model", model); } catch (e) {}
   }
 
@@ -341,7 +362,7 @@ function handleQuickAction(action) {
   sendMessage();
 }
 
-// Send Message
+// Send Message with Auto Fallback & Demand Spike Handling
 async function sendMessage() {
   const text = promptInput.value.trim();
   if (!text || isGenerating) return;
@@ -384,7 +405,7 @@ async function sendMessage() {
   }
 
   try {
-    const model = modelSelector.value || "gemini-3.6-flash";
+    const selectedSetting = modelSelector.value || "auto";
     let sysPrompt = DEFAULT_SYSTEM_PROMPT;
     try { sysPrompt = localStorage.getItem("gemini_system_prompt") || DEFAULT_SYSTEM_PROMPT; } catch (e) {}
 
@@ -393,8 +414,6 @@ async function sendMessage() {
 
     // Build History
     chatHistory.push({ role: "user", parts: [{ text: contextualPrompt }] });
-
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     const payload = {
       contents: chatHistory,
@@ -407,29 +426,88 @@ async function sendMessage() {
       }
     };
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    // Determine cascade order:
+    // If 'auto', try: 3.8 Flash -> 3.7 Flash -> 3.6 Flash -> 3.5 Flash Lite
+    // If specific model selected, try that model first, then fall back to the others if demand spiked
+    let candidatesToTry = [];
+    if (selectedSetting === "auto") {
+      candidatesToTry = [...ORDERED_MODELS];
+    } else {
+      candidatesToTry = [selectedSetting, ...ORDERED_MODELS.filter(m => m !== selectedSetting)];
+    }
+
+    let finalReply = null;
+    let successfulModel = null;
+    let lastError = "";
+
+    for (let i = 0; i < candidatesToTry.length; i++) {
+      const activeModel = candidatesToTry[i];
+      const displayName = getModelDisplayName(activeModel);
+
+      updateLoadingBubble(loadingId, `Thinking with ${displayName}...`);
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${apiKey}`;
+
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          finalReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          successfulModel = activeModel;
+          break; // Success!
+        }
+
+        const errJson = await response.json().catch(() => ({}));
+        const errMsg = errJson?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+        lastError = errMsg;
+
+        const isDemandIssue = 
+          response.status === 429 || 
+          response.status === 503 || 
+          response.status === 404 || 
+          errMsg.toLowerCase().includes("high demand") || 
+          errMsg.toLowerCase().includes("spikes in demand") || 
+          errMsg.toLowerCase().includes("overloaded") || 
+          errMsg.toLowerCase().includes("exhausted") ||
+          errMsg.toLowerCase().includes("try again later");
+
+        if (isDemandIssue && i < candidatesToTry.length - 1) {
+          const nextModel = candidatesToTry[i + 1];
+          console.warn(`Demand spike on ${activeModel}. Auto-falling back to ${nextModel}...`);
+          updateLoadingBubble(loadingId, `High demand on ${displayName}, auto-routing to ${getModelDisplayName(nextModel)}...`);
+          await new Promise(res => setTimeout(res, 250));
+          continue;
+        } else {
+          break;
+        }
+      } catch (netErr) {
+        lastError = netErr.message;
+        if (i < candidatesToTry.length - 1) {
+          continue;
+        }
+        break;
+      }
+    }
 
     removeElement(loadingId);
 
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      const errMsg = errJson?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-      appendMessage("assistant", `⚠️ **Gemini API Error:** ${errMsg}\n\nPlease check your API key or model in Settings.`);
-      return;
+    if (finalReply) {
+      chatHistory.push({ role: "model", parts: [{ text: finalReply }] });
+      
+      const isFallback = selectedSetting !== "auto" && successfulModel !== selectedSetting;
+      const modelTag = selectedSetting === "auto" 
+        ? `⚡ ${getModelDisplayName(successfulModel)}` 
+        : (isFallback ? `⚡ Fallback: ${getModelDisplayName(successfulModel)}` : getModelDisplayName(successfulModel));
+
+      appendMessage("assistant", finalReply, null, modelTag);
+    } else {
+      appendMessage("assistant", `⚠️ **Gemini API Error:** ${lastError}\n\nAll available models were experiencing temporary high demand. Please try sending your message again in a moment.`);
     }
-
-    const data = await response.json();
-    const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response received from Gemini.";
-
-    // Store in history
-    chatHistory.push({ role: "model", parts: [{ text: replyText }] });
-
-    // Render response
-    appendMessage("assistant", replyText);
 
   } catch (err) {
     removeElement(loadingId);
@@ -441,7 +519,7 @@ async function sendMessage() {
   }
 }
 
-// Test Connection
+// Test Connection with Fallback Verification
 async function testApiKeyConnection() {
   const key = (apiKeyInput.value || "").trim();
   if (!key || key.length < 5) {
@@ -450,35 +528,53 @@ async function testApiKeyConnection() {
   }
 
   testStatus.innerHTML = "<span style='color:var(--text-muted);'>Testing connection to Google AI Studio...</span>";
-  const model = modelSelector.value || "gemini-3.6-flash";
+  
+  let testSuccess = false;
+  let lastErr = "";
+  let workingModel = "";
 
-  try {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: "ping" }] }],
-        generationConfig: { maxOutputTokens: 5 }
-      })
-    });
+  for (const model of ORDERED_MODELS) {
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "ping" }] }],
+          generationConfig: { maxOutputTokens: 5 }
+        })
+      });
 
-    if (response.ok) {
-      testStatus.innerHTML = "<span style='color:#10b981; font-weight:600;'>✓ Connected successfully! Model is ready.</span>";
-      persistApiKey(key);
-      checkApiStatus();
-    } else {
-      const err = await response.json().catch(() => ({}));
-      testStatus.innerHTML = `<span style='color:#ef4444;'>✗ Error (${response.status}): ${err?.error?.message || "Invalid Key"}</span>`;
-      statusDot.className = "status-dot error";
+      if (response.ok) {
+        testSuccess = true;
+        workingModel = model;
+        break;
+      }
+
+      const errJson = await response.json().catch(() => ({}));
+      lastErr = errJson?.error?.message || `HTTP ${response.status}`;
+      if (lastErr.toLowerCase().includes("high demand") || response.status === 429 || response.status === 503) {
+        continue;
+      }
+      break;
+    } catch (err) {
+      lastErr = err.message;
+      break;
     }
-  } catch (err) {
-    testStatus.innerHTML = `<span style='color:#ef4444;'>✗ Network failed: ${err.message}</span>`;
+  }
+
+  if (testSuccess) {
+    testStatus.innerHTML = `<span style='color:#10b981; font-weight:600;'>✓ Connected! (${getModelDisplayName(workingModel)} ready)</span>`;
+    persistApiKey(key);
+    checkApiStatus();
+  } else {
+    testStatus.innerHTML = `<span style='color:#ef4444;'>✗ Error: ${lastErr}</span>`;
+    statusDot.className = "status-dot error";
   }
 }
 
 // UI Rendering
-function appendMessage(role, content, selectionBadgeText = null) {
+function appendMessage(role, content, selectionBadgeText = null, modelBadgeText = null) {
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${role}`;
 
@@ -503,6 +599,9 @@ function appendMessage(role, content, selectionBadgeText = null) {
   if (selectionBadgeText) {
     meta.innerHTML += `<span>•</span><span style="font-family:monospace;">${selectionBadgeText}</span>`;
   }
+  if (modelBadgeText) {
+    meta.innerHTML += `<span>•</span><span style="color:#10b981; font-weight:500;">${modelBadgeText}</span>`;
+  }
 
   msgDiv.appendChild(meta);
   chatMessages.appendChild(msgDiv);
@@ -521,13 +620,20 @@ function appendLoadingBubble(id) {
       <div class="dot"></div>
       <div class="dot"></div>
       <div class="dot"></div>
-      <span style="font-size:11px; color:var(--text-muted); margin-left:6px;">Thinking...</span>
+      <span class="loading-status" style="font-size:11px; color:var(--text-muted); margin-left:6px;">Thinking...</span>
     </div>
   `;
 
   msgDiv.appendChild(bubble);
   chatMessages.appendChild(msgDiv);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function updateLoadingBubble(id, statusText) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const span = el.querySelector(".loading-status");
+  if (span) span.textContent = statusText;
 }
 
 function removeElement(id) {
@@ -604,9 +710,9 @@ function renderWelcomeCard() {
       Direct connection to Google AI Studio. 100% Free, zero paywalls, zero middleman.
     </div>
     <div class="welcome-features">
-      <div class="feature-item">⚡ <strong>One-Click Formulas:</strong> Insert XLOOKUP, LET & dynamic arrays.</div>
-      <div class="feature-item">📊 <strong>Selection Aware:</strong> Highlights & analyzes active cells automatically.</div>
-      <div class="feature-item">🔒 <strong>100% Private BYOK:</strong> Key stays in local storage on your device.</div>
+      <div class="feature-item">⚡ <strong>Auto Smart Fallback:</strong> Automatically switches models if Google experiences demand spikes.</div>
+      <div class="feature-item">📊 <strong>Dynamic Context:</strong> Detects selected cells and feeds values/formulas to Gemini.</div>
+      <div class="feature-item">🔒 <strong>100% Private BYOK:</strong> Your API key is stored safely in your local browser sandbox.</div>
     </div>
   `;
   chatMessages.appendChild(welcome);
